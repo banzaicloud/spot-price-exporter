@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"net/http"
+	"strings"
 
 	"github.com/banzaicloud/spot-price-exporter/exporter"
 	"github.com/prometheus/client_golang/prometheus"
@@ -11,9 +12,10 @@ import (
 )
 
 var (
-	addr        = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
-	metricsPath = flag.String("metrics-path", "/metrics", "path to metrics endpoint")
-	rawLevel    = flag.String("log-level", "info", "log level")
+	addr           = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
+	metricsPath    = flag.String("metrics-path", "/metrics", "path to metrics endpoint")
+	rawLevel       = flag.String("log-level", "info", "log level")
+	partitionsFlag = flag.String("partitions", "aws", "Comma separated list of AWS partitions. Accepted values: aws, aws-cn, aws-us-gov")
 )
 
 func init() {
@@ -31,7 +33,9 @@ func main() {
 	log.Info("Starting AWS Spot Price exporter")
 	log.Infof("Starting metric http endpoint on %s", *addr)
 
-	exporter, err := exporter.NewExporter()
+	partitions := strings.Split(strings.Replace(*partitionsFlag, " ", "", -1), ",")
+	validatePartitions(partitions)
+	exporter, err := exporter.NewExporter(partitions)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -41,6 +45,14 @@ func main() {
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", rootHandler)
 	log.Fatal(http.ListenAndServe(*addr, nil))
+}
+
+func validatePartitions(parts []string) {
+	for _, p := range parts {
+		if p != "aws" && p != "aws-cn" && p != "aws-us-gov" {
+			log.Fatalf("partition %s is not recognized. Available partitions: aws, aws-cn, aws-us-gov", p)
+		}
+	}
 }
 
 func rootHandler(w http.ResponseWriter, r *http.Request) {

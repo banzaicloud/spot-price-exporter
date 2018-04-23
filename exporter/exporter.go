@@ -2,18 +2,23 @@ package exporter
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
-// Exporter implements the prometheus.Exporter interface, and exports AWS AutoScaling metrics.
+// Exporter implements the prometheus.Exporter interface, and exports AWS Spot Price metrics.
 type Exporter struct {
 	session      *session.Session
+	partitions   []string
 	duration     prometheus.Gauge
 	scrapeErrors prometheus.Gauge
 	totalScrapes prometheus.Counter
@@ -39,7 +44,7 @@ func (e *scrapeError) Error() string {
 }
 
 // NewExporter returns a new exporter of AWS Autoscaling group metrics.
-func NewExporter() (*Exporter, error) {
+func NewExporter(p []string) (*Exporter, error) {
 
 	session, err := session.NewSession()
 	if err != nil {
@@ -48,7 +53,8 @@ func NewExporter() (*Exporter, error) {
 	}
 
 	e := Exporter{
-		session: session,
+		session:    session,
+		partitions: p,
 		duration: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "aws_spot",
 			Name:      "scrape_duration_seconds",
@@ -119,14 +125,46 @@ func (e *Exporter) scrape(scrapes chan<- ScrapeResult) {
 
 	var errorCount uint64 = 0
 
-	//ec2Svc := ec2.New(e.session, &aws.Config{Region:aws.String("eu-west-1")})
+	dp := endpoints.DefaultPartitions()
+	for _, p := range dp {
+		log.Info(p.ID())
+		if !e.inPartitions(p.ID()) {
+			continue
+		}
+		var wg sync.WaitGroup
+		for _, r := range p.Regions() {
+			log.Info(r.ID())
+			wg.Add(1)
+			go func(r string) {
+				defer wg.Done()
+				ec2Svc := ec2.New(e.session, &aws.Config{Region: aws.String(r)})
+				history, err := ec2Svc.DescribeSpotPriceHistory(&ec2.DescribeSpotPriceHistoryInput{
+					StartTime:           aws.Time(time.Now()),
+					ProductDescriptions: []*string{aws.String("Linux/UNIX")},
+				})
+				if err != nil {
+					log.WithError(err).Error("error while fetching spot price history")
+					atomic.AddUint64(&errorCount, 1)
+				}
+				for _, pe := range history.SpotPriceHistory {
+					price, err := strconv.ParseFloat(*pe.SpotPrice, 64)
+					if err != nil {
+						log.WithError(err).Error("error while parsing spot price value from API response")
+						atomic.AddUint64(&errorCount, 1)
+					}
+					log.Debugf("Creating new metric: current_price{region=%s, az=%s, instance_type=%s} = %v.", r, *pe.AvailabilityZone, *pe.InstanceType, price)
+					scrapes <- ScrapeResult{
+						Name:             "current_price",
+						Value:            price,
+						Region:           r,
+						AvailabilityZone: *pe.AvailabilityZone,
+						InstanceType:     *pe.InstanceType,
+					}
 
-	scrapes <- ScrapeResult{
-		Name:             "current_price",
-		Value:            0.12,
-		Region:           "eu-west-1",
-		AvailabilityZone: "eu-west-1a",
-		InstanceType:     "m5.xlarge",
+				}
+			}(r.ID())
+		}
+		wg.Wait()
 	}
 
 	e.scrapeErrors.Set(float64(atomic.LoadUint64(&errorCount)))
@@ -152,4 +190,13 @@ func (e *Exporter) setSpotMetrics(scrapes <-chan ScrapeResult) {
 		}
 		e.spotMetrics[name].With(labels).Set(float64(scr.Value))
 	}
+}
+
+func (e *Exporter) inPartitions(p string) bool {
+	for _, partition := range e.partitions {
+		if p == partition {
+			return true
+		}
+	}
+	return false
 }
