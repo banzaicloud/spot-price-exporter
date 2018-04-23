@@ -1,7 +1,6 @@
 package exporter
 
 import (
-	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -17,34 +16,28 @@ import (
 
 // Exporter implements the prometheus.Exporter interface, and exports AWS Spot Price metrics.
 type Exporter struct {
-	session      *session.Session
-	partitions   []string
-	duration     prometheus.Gauge
-	scrapeErrors prometheus.Gauge
-	totalScrapes prometheus.Counter
-	spotMetrics  map[string]*prometheus.GaugeVec
-	metricsMtx   sync.RWMutex
+	session             *session.Session
+	partitions          []string
+	productDescriptions []string
+	duration            prometheus.Gauge
+	scrapeErrors        prometheus.Gauge
+	totalScrapes        prometheus.Counter
+	spotMetrics         map[string]*prometheus.GaugeVec
+	metricsMtx          sync.RWMutex
 	sync.RWMutex
 }
 
 type ScrapeResult struct {
-	Name             string
-	Value            float64
-	Region           string
-	AvailabilityZone string
-	InstanceType     string
-}
-
-type scrapeError struct {
-	count uint64
-}
-
-func (e *scrapeError) Error() string {
-	return fmt.Sprintf("Error count: %d", e.count)
+	Name               string
+	Value              float64
+	Region             string
+	AvailabilityZone   string
+	InstanceType       string
+	ProductDescription string
 }
 
 // NewExporter returns a new exporter of AWS Autoscaling group metrics.
-func NewExporter(p []string) (*Exporter, error) {
+func NewExporter(p []string, pds []string) (*Exporter, error) {
 
 	session, err := session.NewSession()
 	if err != nil {
@@ -53,8 +46,9 @@ func NewExporter(p []string) (*Exporter, error) {
 	}
 
 	e := Exporter{
-		session:    session,
-		partitions: p,
+		session:             session,
+		partitions:          p,
+		productDescriptions: pds,
 		duration: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "aws_spot",
 			Name:      "scrape_duration_seconds",
@@ -78,12 +72,11 @@ func NewExporter(p []string) (*Exporter, error) {
 
 func (e *Exporter) initGauges() {
 	e.spotMetrics = map[string]*prometheus.GaugeVec{}
-
 	e.spotMetrics["current_spot_price"] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "aws_spot",
 		Name:      "current_price",
 		Help:      "Current spot price of the instance type.",
-	}, []string{"instance_type", "region", "availability_zone"})
+	}, []string{"instance_type", "region", "availability_zone", "product_description"})
 }
 
 // Describe outputs metric descriptions.
@@ -127,40 +120,49 @@ func (e *Exporter) scrape(scrapes chan<- ScrapeResult) {
 
 	dp := endpoints.DefaultPartitions()
 	for _, p := range dp {
-		log.Info(p.ID())
 		if !e.inPartitions(p.ID()) {
 			continue
 		}
+		log.Infof("querying spot prices in all regions [partition=%s]", p.ID())
 		var wg sync.WaitGroup
 		for _, r := range p.Regions() {
-			log.Info(r.ID())
+			log.Debugf("querying spot prices [region=%s]", r.ID())
 			wg.Add(1)
 			go func(r string) {
 				defer wg.Done()
 				ec2Svc := ec2.New(e.session, &aws.Config{Region: aws.String(r)})
-				history, err := ec2Svc.DescribeSpotPriceHistory(&ec2.DescribeSpotPriceHistoryInput{
+				var pds []*string
+				if len(e.productDescriptions) > 0 {
+					pds = aws.StringSlice(e.productDescriptions)
+				} else {
+					pds = nil
+				}
+				err := ec2Svc.DescribeSpotPriceHistoryPages(&ec2.DescribeSpotPriceHistoryInput{
 					StartTime:           aws.Time(time.Now()),
-					ProductDescriptions: []*string{aws.String("Linux/UNIX")},
+					ProductDescriptions: pds,
+				}, func(history *ec2.DescribeSpotPriceHistoryOutput, lastPage bool) bool {
+					for _, pe := range history.SpotPriceHistory {
+						price, err := strconv.ParseFloat(*pe.SpotPrice, 64)
+						if err != nil {
+							log.WithError(err).Errorf("error while parsing spot price value from API response [region=%s, az=%s, type=%s]", r, *pe.AvailabilityZone, *pe.InstanceType)
+							atomic.AddUint64(&errorCount, 1)
+						}
+						log.Debugf("Creating new metric: current_price{region=%s, az=%s, instance_type=%s, product_description=%s} = %v.", r, *pe.AvailabilityZone, *pe.InstanceType, *pe.ProductDescription, price)
+						scrapes <- ScrapeResult{
+							Name:               "current_price",
+							Value:              price,
+							Region:             r,
+							AvailabilityZone:   *pe.AvailabilityZone,
+							InstanceType:       *pe.InstanceType,
+							ProductDescription: *pe.ProductDescription,
+						}
+
+					}
+					return true
 				})
 				if err != nil {
-					log.WithError(err).Error("error while fetching spot price history")
+					log.WithError(err).Errorf("error while fetching spot price history [region=%s]", r)
 					atomic.AddUint64(&errorCount, 1)
-				}
-				for _, pe := range history.SpotPriceHistory {
-					price, err := strconv.ParseFloat(*pe.SpotPrice, 64)
-					if err != nil {
-						log.WithError(err).Error("error while parsing spot price value from API response")
-						atomic.AddUint64(&errorCount, 1)
-					}
-					log.Debugf("Creating new metric: current_price{region=%s, az=%s, instance_type=%s} = %v.", r, *pe.AvailabilityZone, *pe.InstanceType, price)
-					scrapes <- ScrapeResult{
-						Name:             "current_price",
-						Value:            price,
-						Region:           r,
-						AvailabilityZone: *pe.AvailabilityZone,
-						InstanceType:     *pe.InstanceType,
-					}
-
 				}
 			}(r.ID())
 		}
@@ -180,13 +182,14 @@ func (e *Exporter) setSpotMetrics(scrapes <-chan ScrapeResult) {
 			e.spotMetrics[name] = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 				Namespace: "aws_spot",
 				Name:      name,
-			}, []string{"instance_type", "region", "availability_zone"})
+			}, []string{"instance_type", "region", "availability_zone", "product_description"})
 			e.metricsMtx.Unlock()
 		}
 		var labels prometheus.Labels = map[string]string{
-			"instance_type":     scr.InstanceType,
-			"region":            scr.Region,
-			"availability_zone": scr.AvailabilityZone,
+			"instance_type":       scr.InstanceType,
+			"region":              scr.Region,
+			"availability_zone":   scr.AvailabilityZone,
+			"product_description": scr.ProductDescription,
 		}
 		e.spotMetrics[name].With(labels).Set(float64(scr.Value))
 	}
