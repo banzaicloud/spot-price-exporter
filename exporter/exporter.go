@@ -27,7 +27,7 @@ type Exporter struct {
 	sync.RWMutex
 }
 
-type ScrapeResult struct {
+type scrapeResult struct {
 	Name               string
 	Value              float64
 	Region             string
@@ -92,7 +92,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 // Collect fetches info from the AWS API and the BanzaiCloud recommendation API
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
-	spotScrapes := make(chan ScrapeResult)
+	spotScrapes := make(chan scrapeResult)
 
 	e.Lock()
 	defer e.Unlock()
@@ -110,13 +110,13 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-func (e *Exporter) scrape(scrapes chan<- ScrapeResult) {
+func (e *Exporter) scrape(scrapes chan<- scrapeResult) {
 
 	defer close(scrapes)
 	now := time.Now().UnixNano()
 	e.totalScrapes.Inc()
 
-	var errorCount uint64 = 0
+	var errorCount uint64
 
 	dp := endpoints.DefaultPartitions()
 	for _, p := range dp {
@@ -148,7 +148,7 @@ func (e *Exporter) scrape(scrapes chan<- ScrapeResult) {
 							atomic.AddUint64(&errorCount, 1)
 						}
 						log.Debugf("Creating new metric: current_price{region=%s, az=%s, instance_type=%s, product_description=%s} = %v.", r, *pe.AvailabilityZone, *pe.InstanceType, *pe.ProductDescription, price)
-						scrapes <- ScrapeResult{
+						scrapes <- scrapeResult{
 							Name:               "current_price",
 							Value:              price,
 							Region:             r,
@@ -173,7 +173,7 @@ func (e *Exporter) scrape(scrapes chan<- ScrapeResult) {
 	e.duration.Set(float64(time.Now().UnixNano()-now) / 1000000000)
 }
 
-func (e *Exporter) setSpotMetrics(scrapes <-chan ScrapeResult) {
+func (e *Exporter) setSpotMetrics(scrapes <-chan scrapeResult) {
 	log.Debug("set spot metrics")
 	for scr := range scrapes {
 		name := scr.Name
