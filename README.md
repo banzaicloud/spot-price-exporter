@@ -8,7 +8,15 @@ Price info is queried in every available region for every available instance typ
 
 Building the project is as simple as running a go build command. The result is a statically linked executable binary.
 ```
-go build .
+make build
+```
+
+### Run as dev
+```
+export AWS_ACCESS_KEY_ID=""
+export AWS_SECRET_ACCESS_KEY=""
+
+make run-dev
 ```
 
 ### Configuration
