@@ -11,6 +11,14 @@ Building the project is as simple as running a go build command. The result is a
 make build
 ```
 
+#### Docker
+
+An auto-built image is available at https://hub.docker.com/r/banzaicloud/spot-price-exporter/
+
+```
+docker run -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY banzaicloud/spot-price-exporter
+```
+
 ### Run as dev
 ```
 export AWS_ACCESS_KEY_ID=""
