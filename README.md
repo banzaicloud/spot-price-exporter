@@ -41,6 +41,8 @@ Usage of ./spot-price-exporter:
         Comma separated list of AWS partitions. Accepted values: aws, aws-cn, aws-us-gov (default "aws")
   -product-descriptions string
         Comma separated list of product descriptions. Accepted values: Linux/UNIX, SUSE Linux, Windows, Linux/UNIX (Amazon VPC), SUSE Linux (Amazon VPC), Windows (Amazon VPC) (default "Linux/UNIX")
+  -regions string
+        Comma separated list of AWS regions to get pricing for (defaults to *all*)
 ```
 
 ### Example metrics

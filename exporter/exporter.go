@@ -19,6 +19,7 @@ type Exporter struct {
 	session             *session.Session
 	partitions          []string
 	productDescriptions []string
+	regions []string
 	duration            prometheus.Gauge
 	scrapeErrors        prometheus.Gauge
 	totalScrapes        prometheus.Counter
@@ -36,8 +37,8 @@ type scrapeResult struct {
 	ProductDescription string
 }
 
-// NewExporter returns a new exporter of AWS Autoscaling group metrics.
-func NewExporter(p []string, pds []string) (*Exporter, error) {
+// NewExporter returns a new exporter of AWS Spot Price metrics.
+func NewExporter(p []string, pds []string, regions []string) (*Exporter, error) {
 
 	session, err := session.NewSession()
 	if err != nil {
@@ -49,6 +50,7 @@ func NewExporter(p []string, pds []string) (*Exporter, error) {
 		session:             session,
 		partitions:          p,
 		productDescriptions: pds,
+		regions: regions,
 		duration: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "aws_spot",
 			Name:      "scrape_duration_seconds",
@@ -123,9 +125,17 @@ func (e *Exporter) scrape(scrapes chan<- scrapeResult) {
 		if !e.inPartitions(p.ID()) {
 			continue
 		}
-		log.Infof("querying spot prices in all regions [partition=%s]", p.ID())
+		log.Infof("querying spot prices in each region [partition=%s]", p.ID())
 		var wg sync.WaitGroup
 		for _, r := range p.Regions() {
+			// Skip regions we don't care about, if we specified any we do
+			if len(e.regions) > 0 {
+				if !e.inRegions(r.ID()) {
+					log.Debugf("Skipping region %s", r.ID())
+					continue
+				}
+			}
+
 			log.Debugf("querying spot prices [region=%s]", r.ID())
 			wg.Add(1)
 			go func(r string) {
@@ -198,6 +208,15 @@ func (e *Exporter) setSpotMetrics(scrapes <-chan scrapeResult) {
 func (e *Exporter) inPartitions(p string) bool {
 	for _, partition := range e.partitions {
 		if p == partition {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Exporter) inRegions(r string) bool {
+	for _, region := range e.regions {
+		if r == region {
 			return true
 		}
 	}
