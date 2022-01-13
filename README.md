@@ -37,8 +37,6 @@ Usage of ./spot-price-exporter:
         log level (default "info")
   -metrics-path string
         path to metrics endpoint (default "/metrics")
-  -partitions string
-        Comma separated list of AWS partitions. Accepted values: aws, aws-cn, aws-us-gov (default "aws")
   -product-descriptions string
         Comma separated list of product descriptions. Accepted values: Linux/UNIX, SUSE Linux, Windows, Linux/UNIX (Amazon VPC), SUSE Linux (Amazon VPC), Windows (Amazon VPC) (default "Linux/UNIX")
   -regions string
