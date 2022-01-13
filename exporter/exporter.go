@@ -1,25 +1,23 @@
 package exporter
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
 // Exporter implements the prometheus.Exporter interface, and exports AWS Spot Price metrics.
 type Exporter struct {
-	session             *session.Session
-	partitions          []string
 	productDescriptions []string
-	regions []string
+	regions             []string
 	duration            prometheus.Gauge
 	scrapeErrors        prometheus.Gauge
 	totalScrapes        prometheus.Counter
@@ -38,19 +36,11 @@ type scrapeResult struct {
 }
 
 // NewExporter returns a new exporter of AWS Spot Price metrics.
-func NewExporter(p []string, pds []string, regions []string) (*Exporter, error) {
-
-	session, err := session.NewSession()
-	if err != nil {
-		log.WithError(err).Error("Error creating AWS session")
-		return nil, err
-	}
+func NewExporter(pds []string, regions []string) (*Exporter, error) {
 
 	e := Exporter{
-		session:             session,
-		partitions:          p,
 		productDescriptions: pds,
-		regions: regions,
+		regions:             regions,
 		duration: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "aws_spot",
 			Name:      "scrape_duration_seconds",
@@ -120,62 +110,56 @@ func (e *Exporter) scrape(scrapes chan<- scrapeResult) {
 
 	var errorCount uint64
 
-	dp := endpoints.DefaultPartitions()
-	for _, p := range dp {
-		if !e.inPartitions(p.ID()) {
+	var wg sync.WaitGroup
+	for _, region := range e.regions {
+		if !e.inRegions(region) {
+			log.Debugf("Skipping region %s", region)
 			continue
 		}
-		log.Infof("querying spot prices in each region [partition=%s]", p.ID())
-		var wg sync.WaitGroup
-		for _, r := range p.Regions() {
-			// Skip regions we don't care about, if we specified any we do
-			if len(e.regions) > 0 {
-				if !e.inRegions(r.ID()) {
-					log.Debugf("Skipping region %s", r.ID())
-					continue
-				}
+
+		log.Debugf("querying spot prices [region=%s]", region)
+		wg.Add(1)
+		go func(region string) {
+			defer wg.Done()
+			cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+			if err != nil {
+				log.WithError(err).Errorf("error while initializing aws config [region=%s]", region)
+				atomic.AddUint64(&errorCount, 1)
 			}
 
-			log.Debugf("querying spot prices [region=%s]", r.ID())
-			wg.Add(1)
-			go func(r string) {
-				defer wg.Done()
-				ec2Svc := ec2.New(e.session, &aws.Config{Region: aws.String(r)})
-				var pds []*string
-				if len(e.productDescriptions) > 0 {
-					pds = aws.StringSlice(e.productDescriptions)
-				} else {
-					pds = nil
-				}
-				err := ec2Svc.DescribeSpotPriceHistoryPages(&ec2.DescribeSpotPriceHistoryInput{
+			ec2Svc := ec2.NewFromConfig(cfg)
+			pag := ec2.NewDescribeSpotPriceHistoryPaginator(
+				ec2Svc,
+				&ec2.DescribeSpotPriceHistoryInput{
 					StartTime:           aws.Time(time.Now()),
-					ProductDescriptions: pds,
-				}, func(history *ec2.DescribeSpotPriceHistoryOutput, lastPage bool) bool {
-					for _, pe := range history.SpotPriceHistory {
-						price, err := strconv.ParseFloat(*pe.SpotPrice, 64)
-						if err != nil {
-							log.WithError(err).Errorf("error while parsing spot price value from API response [region=%s, az=%s, type=%s]", r, *pe.AvailabilityZone, *pe.InstanceType)
-							atomic.AddUint64(&errorCount, 1)
-						}
-						log.Debugf("Creating new metric: current_price{region=%s, az=%s, instance_type=%s, product_description=%s} = %v.", r, *pe.AvailabilityZone, *pe.InstanceType, *pe.ProductDescription, price)
-						scrapes <- scrapeResult{
-							Name:               "current_price",
-							Value:              price,
-							Region:             r,
-							AvailabilityZone:   *pe.AvailabilityZone,
-							InstanceType:       *pe.InstanceType,
-							ProductDescription: *pe.ProductDescription,
-						}
-
-					}
-					return true
+					ProductDescriptions: e.productDescriptions,
 				})
+			for pag.HasMorePages() {
+				history, err := pag.NextPage(context.TODO())
 				if err != nil {
-					log.WithError(err).Errorf("error while fetching spot price history [region=%s]", r)
+					log.WithError(err).Errorf("error while fetching spot price history [region=%s]", region)
 					atomic.AddUint64(&errorCount, 1)
 				}
-			}(r.ID())
-		}
+				for _, price := range history.SpotPriceHistory {
+					value, err := strconv.ParseFloat(*price.SpotPrice, 64)
+					if err != nil {
+						log.WithError(err).Errorf("error while parsing spot price value from API response [region=%s, az=%s, type=%s]", region, *price.AvailabilityZone, price.InstanceType)
+						atomic.AddUint64(&errorCount, 1)
+					}
+					log.Debugf("Creating new metric: current_price{region=%s, az=%s, instance_type=%s, product_description=%s} = %v.", region, *price.AvailabilityZone, price.InstanceType, price.ProductDescription, value)
+					scrapes <- scrapeResult{
+						Name:               "current_price",
+						Value:              value,
+						Region:             region,
+						AvailabilityZone:   *price.AvailabilityZone,
+						InstanceType:       string(price.InstanceType),
+						ProductDescription: string(price.ProductDescription),
+					}
+				}
+			}
+			return
+
+		}(region)
 		wg.Wait()
 	}
 
@@ -203,15 +187,6 @@ func (e *Exporter) setSpotMetrics(scrapes <-chan scrapeResult) {
 		}
 		e.spotMetrics[name].With(labels).Set(float64(scr.Value))
 	}
-}
-
-func (e *Exporter) inPartitions(p string) bool {
-	for _, partition := range e.partitions {
-		if p == partition {
-			return true
-		}
-	}
-	return false
 }
 
 func (e *Exporter) inRegions(r string) bool {

@@ -15,9 +15,8 @@ var (
 	addr                = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
 	metricsPath         = flag.String("metrics-path", "/metrics", "path to metrics endpoint")
 	rawLevel            = flag.String("log-level", "info", "log level")
-	partitions          = flag.String("partitions", "aws", "Comma separated list of AWS partitions. Accepted values: aws, aws-cn, aws-us-gov")
 	productDescriptions = flag.String("product-descriptions", "Linux/UNIX", "Comma separated list of product descriptions. Accepted values: Linux/UNIX, SUSE Linux, Windows, Linux/UNIX (Amazon VPC), SUSE Linux (Amazon VPC), Windows (Amazon VPC)")
-	regions = flag.String("regions", "", "Comma separated list of AWS regions to get pricing for (defaults to *all*)")
+	regions             = flag.String("regions", "", "Comma separated list of AWS regions to get pricing for (defaults to *all*)")
 )
 
 func init() {
@@ -32,13 +31,11 @@ func init() {
 }
 
 func main() {
-	log.Infof("Starting AWS Spot Price exporter. [log-level=%s, partitions=%s, product-descriptions=%s]", *rawLevel, *partitions, *productDescriptions)
-	parts := splitAndTrim(*partitions)
+	log.Infof("Starting AWS Spot Price exporter. [log-level=%s, product-descriptions=%s]", *rawLevel, *productDescriptions)
 	pds := splitAndTrim(*productDescriptions)
 	regions := splitAndTrim(*regions)
-	validatePartitions(parts)
 	validateProductDesc(pds)
-	exporter, err := exporter.NewExporter(parts, pds, regions)
+	exporter, err := exporter.NewExporter(pds, regions)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -58,14 +55,6 @@ func splitAndTrim(str string) []string {
 		parts[i] = strings.TrimSpace(parts[i])
 	}
 	return parts
-}
-
-func validatePartitions(parts []string) {
-	for _, p := range parts {
-		if p != "aws" && p != "aws-cn" && p != "aws-us-gov" {
-			log.Fatalf("partition '%s' is not recognized. Available partitions: aws, aws-cn, aws-us-gov", p)
-		}
-	}
 }
 
 func validateProductDesc(pds []string) {
