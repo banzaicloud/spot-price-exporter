@@ -1,4 +1,4 @@
-module github.com/banzaicloud/spot-price-exporter
+module github.com/AndreZiviani/ec2-price-exporter
 
 go 1.17
 
@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.12.0
 	github.com/aws/aws-sdk-go-v2/config v1.12.0
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.27.0
+	github.com/aws/aws-sdk-go-v2/service/pricing v1.11.0
 	github.com/prometheus/client_golang v1.11.0
 	github.com/sirupsen/logrus v1.8.1
 )
@@ -29,10 +30,6 @@ require (
 	github.com/prometheus/common v0.32.1 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
 	github.com/stretchr/testify v1.7.0 // indirect
-	golang.org/x/crypto v0.0.0-20220112180741-5e0467b6c7ce // indirect
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
 	golang.org/x/sys v0.0.0-20220111092808-5a964db01320 // indirect
 	google.golang.org/protobuf v1.27.1 // indirect
-	gopkg.in/airbrake/gobrake.v2 v2.0.9 // indirect
-	gopkg.in/gemnasium/logrus-airbrake-hook.v2 v2.1.2 // indirect
 )
