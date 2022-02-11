@@ -1,5 +1,5 @@
-EXECUTABLE ?= spot-price-exporter
-IMAGE ?= banzaicloud/$(EXECUTABLE)
+EXECUTABLE ?= ec2-price-exporter
+IMAGE ?= AndreZiviani/$(EXECUTABLE)
 TAG ?= dev-$(shell git log -1 --pretty=format:"%h")
 
 LD_FLAGS = -X "main.version=$(TAG)"
@@ -27,16 +27,7 @@ license-check: bin/licensei ## Run license check
 license-cache: bin/licensei ## Generate license cache
 	@bin/licensei cache
 
-DEP_VERSION = 0.5.0
-bin/dep:
-	@mkdir -p ./bin/
-	@curl https://raw.githubusercontent.com/golang/dep/master/install.sh | INSTALL_DIRECTORY=./bin DEP_RELEASE_TAG=v${DEP_VERSION} sh
-
-.PHONY: vendor
-vendor: bin/dep ## Install dependencies
-	bin/dep ensure -vendor-only
-
-all: clean vendor deps fmt vet docker push
+all: clean deps fmt vet docker push
 
 clean:
 	go clean -i ./...
